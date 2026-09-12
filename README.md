@@ -4,7 +4,7 @@ AgentMaster is a local-first tool for managing agent skills and `AGENTS.md` file
 
 It gives you one place to store the real files, inspect and edit them, and link them into the agent tools you use. The command-line interface is the primary product. An optional Electron desktop app will provide the same operations in a graphical interface.
 
-> AgentMaster is an early prototype. The repository currently contains design notes, not a runnable CLI or desktop application.
+> AgentMaster is an early prototype. The repository now contains a runnable CLI and shared core package. The desktop client remains optional and is not wired into the bootstrap yet.
 
 ## Product
 
@@ -77,7 +77,7 @@ The implementation notes and technology decisions live in [techstack.md](./techs
 
 ## CLI usage
 
-The commands below describe the planned interface. They will become runnable as the prototype is built.
+The CLI is available from the workspace with `pnpm dev` or after building with `pnpm build`.
 
 ### Initialize AgentMaster
 
@@ -87,7 +87,7 @@ agentmaster config show
 agentmaster config set storage.root ~/Documents/AgentMaster
 ```
 
-The storage root contains the real managed skills and `AGENTS.md` files. Target paths remain configurable, so the canonical files do not need to live inside a tool's directory.
+`agentmaster init` creates the configuration file and the canonical storage directories. The storage root contains the real managed skills and `AGENTS.md` files. Target paths remain configurable, so the canonical files do not need to live inside a tool's directory. Pass `--config <path>` before a command to use a different configuration file.
 
 ### Manage skills
 
@@ -99,7 +99,7 @@ agentmaster skill link <name> --target codex
 agentmaster skill remove <name>
 ```
 
-A link operation will show the canonical path, the target path, and the action it plans to take. It should refuse to overwrite an unmanaged file unless the user explicitly chooses a backup or replacement.
+A link operation shows the canonical path, target path, and action. It refuses to overwrite an existing unmanaged target. Use `--dry-run` before a link or removal, and `--yes` to confirm a removal.
 
 ### Manage `AGENTS.md` files
 
@@ -111,11 +111,11 @@ agentmaster agents edit --scope nested
 agentmaster agents link --scope project --target codex
 ```
 
-The scope names are placeholders for the first CLI design. The important behavior is that AgentMaster can represent more than one applicable `AGENTS.md` file and can show where each one applies.
+`agentmaster agents list` is available in the bootstrap. Editing and linking scoped `AGENTS.md` files remain part of the next implementation pass.
 
 ### Preview and diagnose changes
 
-Commands that change files will support a dry run:
+Commands that change files support a dry run:
 
 ```sh
 agentmaster skill link <name> --target codex --dry-run
@@ -123,7 +123,7 @@ agentmaster doctor
 agentmaster skill list --json
 ```
 
-The CLI will also provide JSON output for scripts and editor integrations, stable exit codes for common failures, and verbose path diagnostics when requested.
+The CLI also provides JSON output for scripts and editor integrations, stable exit codes for common failures, and path diagnostics through `doctor`.
 
 ### Open the desktop app
 
@@ -131,11 +131,11 @@ The CLI will also provide JSON output for scripts and editor integrations, stabl
 agentmaster gui
 ```
 
-This command will be added after the first desktop installer is available.
+The command currently explains that the optional desktop app is not installed. It will open the desktop app after the Electron package is bootstrapped.
 
 ## Contributor setup
 
-The repository is currently at the design and bootstrap stage. The commands below describe the intended development workflow; some will not work until the corresponding package has been scaffolded.
+The repository is at the design and bootstrap stage. The shared core package and CLI are scaffolded; the desktop client is still optional.
 
 ### Prerequisites
 
@@ -152,18 +152,18 @@ cd AgentMaster
 pnpm install
 ```
 
-The repository will use a pnpm workspace with this shape:
+The repository uses a pnpm workspace with this shape:
 
 ```text
-apps/desktop/       # optional Electron application
+apps/desktop/       # optional Electron application slot
 packages/core/      # shared domain and filesystem operations
 packages/cli/       # agentmaster command
-tests/              # fixtures and integration tests
+tests/              # integration tests
 ```
 
 ### Development commands
 
-The intended root commands are:
+The root commands are:
 
 ```sh
 pnpm dev
@@ -171,6 +171,8 @@ pnpm test
 pnpm check
 pnpm build
 ```
+
+Run `pnpm install` once after cloning. `pnpm dev` runs the CLI directly from TypeScript. The built executable is `packages/cli/dist/index.js` until the CLI is published.
 
 Keep file-changing behavior in `packages/core`. The CLI and desktop app should remain adapters around that package. Test symlinks, path resolution, source downloads, collision handling, and `AGENTS.md` discovery in temporary directories rather than in a contributor's home directory.
 
