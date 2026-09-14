@@ -44,6 +44,15 @@ export interface AddedSkill extends SkillSummary {
   revision?: string;
 }
 
+export interface ManagedSkillLink {
+  target: string;
+  mode: LinkMode;
+}
+
+export interface SkillMetadata extends AddedSkill {
+  links: ManagedSkillLink[];
+}
+
 export type LinkAction = "create-symlink" | "copy" | "already-linked";
 
 export interface SkillLinkResult {
@@ -59,6 +68,7 @@ export interface RemovedSkill {
   name: string;
   canonicalPath: string;
   linkedTargets: string[];
+  copiedTargets: string[];
   dryRun: boolean;
 }
 
@@ -68,6 +78,7 @@ export interface AgentFile {
   scope: AgentScope;
   path: string;
   exists: boolean;
+  targetName?: string;
 }
 
 export interface DoctorIssue {

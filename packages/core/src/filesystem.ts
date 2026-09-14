@@ -5,11 +5,12 @@ import {
   readdir,
   readlink,
   rm,
+  stat,
   symlink,
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 export async function exists(path: string): Promise<boolean> {
   try {
@@ -26,6 +27,17 @@ export async function exists(path: string): Promise<boolean> {
 export async function isDirectory(path: string): Promise<boolean> {
   try {
     return (await lstat(path)).isDirectory();
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+export async function isDirectoryFollowingSymlinks(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory();
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") {
       return false;
@@ -83,7 +95,36 @@ export async function removePath(path: string): Promise<void> {
 }
 
 export async function copyDirectory(source: string, destination: string): Promise<void> {
-  await cp(source, destination, { recursive: true, errorOnExist: true, force: false });
+  await rejectSymbolicLinks(source);
+  await cp(source, destination, {
+    recursive: true,
+    errorOnExist: true,
+    force: false,
+    filter: async (currentSource) => {
+      const stats = await lstat(currentSource);
+      if (stats.isSymbolicLink()) {
+        throw new Error(
+          `Refusing to copy a symbolic link from an untrusted skill: ${currentSource}`,
+        );
+      }
+      return true;
+    },
+  });
+}
+
+async function rejectSymbolicLinks(path: string): Promise<void> {
+  const stats = await lstat(path);
+  if (stats.isSymbolicLink()) {
+    throw new Error(`Refusing to copy a symbolic link from an untrusted skill: ${path}`);
+  }
+  if (!stats.isDirectory()) {
+    return;
+  }
+
+  const entries = await readdir(path, { withFileTypes: true });
+  for (const entry of entries) {
+    await rejectSymbolicLinks(join(path, entry.name));
+  }
 }
 
 export async function createDirectorySymlink(source: string, destination: string): Promise<void> {

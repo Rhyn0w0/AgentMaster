@@ -1,9 +1,11 @@
+#!/usr/bin/env node
 import {
   AgentMasterError,
   addSkill,
   asAgentMasterError,
   discoverAgents,
   doctor,
+  type ErrorCode,
   initializeConfig,
   inspectSkill,
   linkSkill,
@@ -109,7 +111,10 @@ skillCommand
   .action(async (source: string, _options: unknown, command: Command) => {
     const options = getOptions(command);
     const file = await loadConfig(options.config);
-    const added = await addSkill(file.config, source, { name: options.name });
+    const added = await addSkill(file.config, source, {
+      configPath: file.path,
+      name: options.name,
+    });
     print(
       added,
       options.json,
@@ -188,11 +193,7 @@ skillCommand
       { confirm: options.yes, dryRun: options.dryRun },
       file.path,
     );
-    print(
-      result,
-      options.json,
-      `${result.dryRun ? "Would remove" : "Removed"} ${result.canonicalPath}`,
-    );
+    print(result, options.json, renderRemoval(result));
   });
 
 const agentsCommand = program.command("agents").description("discover applicable AGENTS.md files");
@@ -201,16 +202,24 @@ agentsCommand
   .command("list")
   .description("list global, project, and nested AGENTS.md files")
   .option("--cwd <path>", "project directory")
+  .option("--target <name>", "limit global discovery to one configured target")
   .option("--json", "print JSON output")
   .action(async (_options: unknown, command: Command) => {
     const options = getOptions(command);
     const file = await loadConfig(options.config);
-    const agents = await discoverAgents(file.config, { configPath: file.path, cwd: options.cwd });
+    const agents = await discoverAgents(file.config, {
+      configPath: file.path,
+      cwd: options.cwd,
+      targetName: options.target,
+    });
     print(
       agents,
       options.json,
       agents
-        .map((agent) => `${agent.scope}\t${agent.exists ? "present" : "missing"}\t${agent.path}`)
+        .map(
+          (agent) =>
+            `${agent.scope}${agent.targetName ? ` (${agent.targetName})` : ""}\t${agent.exists ? "present" : "missing"}\t${agent.path}`,
+        )
         .join("\n"),
     );
   });
@@ -269,6 +278,12 @@ function print(value: unknown, json: boolean | undefined, humanOutput: string): 
   process.stdout.write(`${humanOutput}\n`);
 }
 
+function renderRemoval(result: Awaited<ReturnType<typeof removeSkill>>): string {
+  const targets = [...result.linkedTargets, ...result.copiedTargets];
+  const targetSummary = targets.length > 0 ? `\nRemoved targets:\n${targets.join("\n")}` : "";
+  return `${result.dryRun ? "Would remove" : "Removed"} ${result.canonicalPath}${targetSummary}`;
+}
+
 function renderConfig(
   path: string,
   config: Awaited<ReturnType<typeof loadConfig>>["config"],
@@ -291,9 +306,44 @@ async function main(): Promise<void> {
     await program.parseAsync(process.argv);
   } catch (error) {
     const normalized = asAgentMasterError(error);
-    process.stderr.write(`agentmaster: ${normalized.message}\n`);
-    process.exitCode = 1;
+    if (process.argv.includes("--json")) {
+      process.stderr.write(
+        `${JSON.stringify(
+          {
+            error: {
+              code: normalized.code,
+              message: normalized.message,
+              details: normalized.details ?? null,
+            },
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    } else {
+      process.stderr.write(`agentmaster: ${normalized.message}\n`);
+    }
+    process.exitCode = getExitCode(normalized.code);
   }
+}
+
+const exitCodes = {
+  CONFIG_EXISTS: 4,
+  CONFIG_NOT_FOUND: 2,
+  INVALID_CONFIG: 3,
+  INVALID_NAME: 3,
+  INVALID_SOURCE: 3,
+  MISSING_SKILL: 3,
+  SKILL_EXISTS: 4,
+  SKILL_NOT_FOUND: 2,
+  TARGET_NOT_FOUND: 2,
+  TARGET_CONFLICT: 4,
+  CONFIRMATION_REQUIRED: 5,
+  OPERATION_FAILED: 1,
+} satisfies Record<ErrorCode, number>;
+
+function getExitCode(code: ErrorCode): number {
+  return exitCodes[code];
 }
 
 void main();

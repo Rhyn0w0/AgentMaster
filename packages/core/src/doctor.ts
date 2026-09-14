@@ -1,6 +1,11 @@
 import { join } from "node:path";
 import { resolveConfig } from "./config.js";
-import { exists, readDirectoryEntries, resolveSymlink } from "./filesystem.js";
+import {
+  exists,
+  isDirectoryFollowingSymlinks,
+  readDirectoryEntries,
+  resolveSymlink,
+} from "./filesystem.js";
 import type { Config, DoctorIssue, DoctorResult } from "./types.js";
 
 export async function doctor(config: Config, configPath?: string): Promise<DoctorResult> {
@@ -17,7 +22,7 @@ export async function doctor(config: Config, configPath?: string): Promise<Docto
   }
 
   for (const [targetName, target] of Object.entries(resolved.targets)) {
-    if (!(await exists(target.skills))) {
+    if (!(await isDirectoryFollowingSymlinks(target.skills))) {
       issues.push({
         code: "MISSING_TARGET_DIRECTORY",
         path: target.skills,

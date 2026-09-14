@@ -34,7 +34,7 @@ The first version should manage:
 | Area | Recommendation | Reason |
 | --- | --- | --- |
 | Repository | A pnpm workspace | Keeps the CLI, shared code, and desktop app in one repository without making Electron a CLI dependency. |
-| Runtime | Node.js LTS | One runtime for the CLI, shared code, build scripts, and Electron main process. Pin the selected LTS version in the repository. |
+| Runtime | Node.js 24 LTS | One runtime for the CLI, shared code, build scripts, and Electron main process. The repository pins Node.js 24.21.0 in `.node-version`. |
 | Language | TypeScript | Shared types can describe configuration, skill sources, targets, plans, and command results. |
 | CLI | `commander` | Small, familiar, and sufficient for the first command tree. |
 | Shared logic | A package named `@agentmaster/core` | The CLI and GUI should call the same file-management and configuration code. |
@@ -106,7 +106,7 @@ Avoid making the GUI depend on a globally installed `agentmaster` executable. Th
 Add these CLI behaviors from the beginning:
 
 - `--json` for scripts and editor integrations;
-- `--dry-run` for every command that can change files;
+- `--dry-run` for link and removal operations, with the same preview contract applied to future file-changing commands;
 - `--verbose` for source and path diagnostics;
 - stable exit codes for validation, conflicts, missing sources, and permission errors;
 - clear output showing the canonical path, target path, and whether a target is a symlink, copy, or unmanaged file;
@@ -245,6 +245,8 @@ The link planner should support:
 - an explicit backup or replace choice;
 - a record of which targets AgentMaster manages;
 - a repair or doctor command for broken links and manually changed targets.
+
+Store managed-link records with each canonical skill. The records must include the target path and whether AgentMaster created a symlink or a copy, so removal can clean up both modes without guessing.
 
 Use absolute paths after expanding `~`, environment variables, and platform defaults. Keep the user's configured canonical path separate from application metadata such as logs, cache, and downloaded archives.
 

@@ -1,17 +1,24 @@
-import { mkdir, mkdtemp, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { lstat, mkdir, mkdtemp, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Config } from "../../packages/core/src/index.js";
 import {
   addSkill,
+  discoverAgents,
   doctor,
   initializeConfig,
   linkSkill,
   listSkills,
   loadConfig,
   removeSkill,
+  resolveConfig,
+  setConfigValue,
 } from "../../packages/core/src/index.js";
+
+const execFile = promisify(execFileCallback);
 
 const temporaryDirectories: string[] = [];
 
@@ -36,6 +43,29 @@ describe("AgentMaster core", () => {
     await expect(initializeConfig({ configPath, storageRoot })).rejects.toMatchObject({
       code: "CONFIG_EXISTS",
     });
+  });
+
+  it("resolves relative persisted paths from the configuration directory", async () => {
+    const root = await createTemporaryDirectory();
+    const configPath = join(root, "config", "config.json");
+    const initialized = await initializeConfig({ configPath, storageRoot: "./storage" });
+
+    const resolved = resolveConfig(
+      {
+        ...initialized.config,
+        targets: {
+          codex: {
+            skills: "./targets/skills",
+            agents: "./targets/AGENTS.md",
+          },
+        },
+      },
+      configPath,
+    );
+
+    expect(resolved.storage.root).toBe(join(root, "config", "storage"));
+    expect(resolved.targets.codex.skills).toBe(join(root, "config", "targets", "skills"));
+    expect(resolved.targets.codex.agents).toBe(join(root, "config", "targets", "AGENTS.md"));
   });
 
   it("adds a local skill and plans then applies a symlink", async () => {
@@ -77,6 +107,9 @@ describe("AgentMaster core", () => {
     const linked = await linkSkill(config, added.name);
     expect(linked.action).toBe("copy");
     expect(await readlink(linked.target).catch(() => undefined)).toBeUndefined();
+    await expect(linkSkill(config, added.name)).resolves.toMatchObject({
+      action: "already-linked",
+    });
 
     const brokenPath = join(targetRoot, "broken");
     await symlink(join(root, "missing"), brokenPath, "dir");
@@ -85,7 +118,88 @@ describe("AgentMaster core", () => {
 
     const removal = await removeSkill(config, added.name, { dryRun: true });
     expect(removal.canonicalPath).toBe(added.path);
+    expect(removal.copiedTargets).toContain(linked.target);
     expect(removal.dryRun).toBe(true);
+
+    const removed = await removeSkill(config, added.name, { confirm: true });
+    expect(removed.copiedTargets).toContain(linked.target);
+    await expect(lstat(linked.target)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("discovers the global AGENTS.md path for every configured target", async () => {
+    const root = await createTemporaryDirectory();
+    const config = testConfig(join(root, "storage"), join(root, "codex-skills"));
+    config.targets.other = {
+      skills: join(root, "other-skills"),
+      agents: join(root, "other-global.md"),
+    };
+    await mkdir(join(root, "codex-skills"), { recursive: true });
+    await writeFile(config.targets.codex.agents, "# Codex\n", "utf8");
+    await writeFile(config.targets.other.agents, "# Other\n", "utf8");
+
+    const agents = await discoverAgents(config, { cwd: root });
+    expect(
+      agents.filter((agent) => agent.scope === "global").map((agent) => agent.targetName),
+    ).toEqual(["codex", "other"]);
+  });
+
+  it("reports regular files and dangling symlinks as missing target directories", async () => {
+    const root = await createTemporaryDirectory();
+    const config = testConfig(join(root, "storage"), join(root, "file-target"));
+    await writeFile(config.targets.codex.skills, "not a directory", "utf8");
+
+    const regularFileResult = await doctor(config);
+    expect(regularFileResult.issues).toContainEqual(
+      expect.objectContaining({ code: "MISSING_TARGET_DIRECTORY" }),
+    );
+
+    await rm(config.targets.codex.skills);
+    await symlink(join(root, "missing-target"), config.targets.codex.skills, "dir");
+    const danglingLinkResult = await doctor(config);
+    expect(danglingLinkResult.issues).toContainEqual(
+      expect.objectContaining({ code: "MISSING_TARGET_DIRECTORY" }),
+    );
+  });
+
+  it("rejects symbolic links inside imported skill sources", async () => {
+    const root = await createTemporaryDirectory();
+    const source = join(root, "unsafe-skill");
+    const outside = join(root, "outside.md");
+    const config = testConfig(join(root, "storage"), join(root, "codex-skills"));
+    await mkdir(source, { recursive: true });
+    await writeFile(outside, "private content\n", "utf8");
+    await symlink(outside, join(source, "SKILL.md"));
+
+    await expect(addSkill(config, source)).rejects.toThrow("symbolic link");
+    await expect(lstat(join(root, "storage", "skills", "unsafe-skill"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("derives a Git skill name from the source URL", async () => {
+    const root = await createTemporaryDirectory();
+    const repository = join(root, "repository");
+    const config = testConfig(join(root, "storage"), join(root, "codex-skills"));
+    await mkdir(repository, { recursive: true });
+    await writeFile(join(repository, "SKILL.md"), "# Git skill\n", "utf8");
+    await execFile("git", ["init", "--quiet", repository]);
+    await execFile("git", ["-C", repository, "config", "user.email", "agentmaster@example.com"]);
+    await execFile("git", ["-C", repository, "config", "user.name", "AgentMaster Tests"]);
+    await execFile("git", ["-C", repository, "add", "SKILL.md"]);
+    await execFile("git", ["-C", repository, "commit", "--quiet", "-m", "initial"]);
+
+    const added = await addSkill(config, `file://${repository}`);
+    expect(added.name).toBe("repository");
+  });
+
+  it("rejects prototype-polluting target configuration keys", () => {
+    const config = testConfig("/tmp/agentmaster-storage", "/tmp/agentmaster-skills");
+
+    expect(() => setConfigValue(config, "targets.__proto__.skills", "/tmp/unsafe")).toThrow(
+      "Unsupported configuration key",
+    );
+    expect(Object.hasOwn(config.targets, "__proto__")).toBe(false);
+    expect(Object.hasOwn(Object.prototype, "skills")).toBe(false);
   });
 });
 

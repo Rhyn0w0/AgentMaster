@@ -96,26 +96,22 @@ agentmaster skill add <local-folder-or-git-url>
 agentmaster skill list
 agentmaster skill inspect <name>
 agentmaster skill link <name> --target codex
-agentmaster skill remove <name>
+agentmaster skill remove <name> --yes
 ```
 
-A link operation shows the canonical path, target path, and action. It refuses to overwrite an existing unmanaged target. Use `--dry-run` before a link or removal, and `--yes` to confirm a removal.
+A link operation shows the canonical path, target path, and action. It refuses to overwrite an existing unmanaged target. AgentMaster records symlink and copy targets so a confirmed removal can clean up both. Use `--dry-run` before a link or removal, and `--yes` to confirm a removal.
 
 ### Manage `AGENTS.md` files
 
 ```sh
 agentmaster agents list
-agentmaster agents edit --scope global
-agentmaster agents edit --scope project
-agentmaster agents edit --scope nested
-agentmaster agents link --scope project --target codex
 ```
 
-`agentmaster agents list` is available in the bootstrap. Editing and linking scoped `AGENTS.md` files remain part of the next implementation pass.
+`agentmaster agents list` reports global paths for every configured target, plus project and nested files. Editing and linking scoped `AGENTS.md` files remain part of the next implementation pass.
 
 ### Preview and diagnose changes
 
-Commands that change files support a dry run:
+Link and removal operations support a dry run:
 
 ```sh
 agentmaster skill link <name> --target codex --dry-run
@@ -124,6 +120,8 @@ agentmaster skill list --json
 ```
 
 The CLI also provides JSON output for scripts and editor integrations, stable exit codes for common failures, and path diagnostics through `doctor`.
+
+Common failure exit codes are stable: `1` for unexpected operation failures, `2` for missing resources, `3` for invalid input or configuration, `4` for existing/conflicting resources, and `5` when confirmation is required.
 
 ### Open the desktop app
 
@@ -139,7 +137,7 @@ The repository is at the design and bootstrap stage. The shared core package and
 
 ### Prerequisites
 
-- Node.js LTS;
+- Node.js 24, as pinned in `.node-version`;
 - pnpm;
 - Git;
 - macOS or Linux for the first supported development environments.

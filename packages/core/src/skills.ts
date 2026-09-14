@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { execa } from "execa";
@@ -20,15 +20,18 @@ import type {
   AddedSkill,
   Config,
   LinkAction,
+  ManagedSkillLink,
   RemovedSkill,
   ResolvedConfig,
   SkillLinkResult,
+  SkillMetadata,
   SkillSummary,
 } from "./types.js";
 
 export interface AddSkillOptions {
   name?: string;
   cwd?: string;
+  configPath?: string;
 }
 
 export async function listSkills(config: Config, configPath?: string): Promise<SkillSummary[]> {
@@ -58,7 +61,6 @@ export async function inspectSkill(
   configPath?: string,
 ): Promise<SkillSummary & { content: string }> {
   const skill = await getSkill(config, name, configPath);
-  const { readFile } = await import("node:fs/promises");
   const content = await readFile(join(skill.path, "SKILL.md"), "utf8");
   return { ...skill, content };
 }
@@ -68,12 +70,13 @@ export async function addSkill(
   source: string,
   options: AddSkillOptions = {},
 ): Promise<AddedSkill> {
-  const resolved = await ensureStorageDirectories(config);
-  const sourceResult = await prepareSource(source, options.cwd ?? process.cwd());
-  const name = validateSkillName(options.name ?? deriveSkillName(sourceResult.directory));
-  const destination = join(resolved.storage.root, "skills", name);
+  const cwd = options.cwd ?? process.cwd();
+  const resolved = await ensureStorageDirectories(config, options.configPath);
+  const sourceResult = await prepareSource(source, cwd);
 
   try {
+    const name = validateSkillName(options.name ?? deriveSourceName(source, cwd));
+    const destination = join(resolved.storage.root, "skills", name);
     if (await exists(destination)) {
       throw new AgentMasterError("SKILL_EXISTS", `A skill named ${name} already exists.`);
     }
@@ -93,7 +96,7 @@ export async function addSkill(
       source,
       ...(sourceResult.revision ? { revision: sourceResult.revision } : {}),
     };
-    await writeJson(join(resolved.storage.root, "metadata", "skills", `${name}.json`), added);
+    await writeSkillMetadata(resolved, { ...added, links: [] });
     return added;
   } finally {
     await sourceResult.cleanup();
@@ -111,9 +114,14 @@ export async function linkSkill(
   const skill = await getSkill(config, name, configPath);
   const target = getTarget(resolved, targetName);
   const targetPath = join(target.skills, name);
-  const existingTarget = await inspectTarget(targetPath, skill.path);
+  const metadata = await readSkillMetadata(resolved, name);
+  const managedLink = metadata?.links.find((link) => link.target === targetPath);
+  const existingTarget = await inspectTarget(targetPath, skill.path, managedLink?.mode);
 
-  if (existingTarget === "same-link") {
+  if (existingTarget === "same-link" || existingTarget === "managed-copy") {
+    if (!options.dryRun) {
+      await recordManagedLink(resolved, skill, targetPath, managedLink?.mode ?? "symlink");
+    }
     return {
       action: "already-linked",
       name,
@@ -139,6 +147,7 @@ export async function linkSkill(
     } else {
       await copyDirectory(skill.path, targetPath);
     }
+    await recordManagedLink(resolved, skill, targetPath, config.storage.linkMode);
   }
 
   return {
@@ -160,11 +169,27 @@ export async function removeSkill(
   const resolved = resolveConfig(config, configPath);
   const skill = await getSkill(config, name, configPath);
   const linkedTargets: string[] = [];
+  const copiedTargets: string[] = [];
+  const metadata = await readSkillMetadata(resolved, name);
+
+  for (const link of metadata?.links ?? []) {
+    if (link.mode === "copy") {
+      if (await isDirectory(link.target)) {
+        copiedTargets.push(link.target);
+      }
+    } else if ((await inspectTarget(link.target, skill.path)) === "same-link") {
+      linkedTargets.push(link.target);
+    }
+  }
 
   for (const target of Object.values(resolved.targets)) {
     const targetPath = join(target.skills, name);
     const targetType = await inspectTarget(targetPath, skill.path);
-    if (targetType === "same-link") {
+    if (
+      targetType === "same-link" &&
+      !linkedTargets.includes(targetPath) &&
+      !copiedTargets.includes(targetPath)
+    ) {
       linkedTargets.push(targetPath);
     }
   }
@@ -172,7 +197,8 @@ export async function removeSkill(
   const result: RemovedSkill = {
     name,
     canonicalPath: skill.path,
-    linkedTargets,
+    linkedTargets: [...new Set(linkedTargets)],
+    copiedTargets: [...new Set(copiedTargets)],
     dryRun: Boolean(options.dryRun),
   };
 
@@ -187,17 +213,95 @@ export async function removeSkill(
     );
   }
 
-  for (const targetPath of linkedTargets) {
+  for (const targetPath of result.linkedTargets) {
+    await removePath(targetPath);
+  }
+  for (const targetPath of result.copiedTargets) {
     await removePath(targetPath);
   }
   await removePath(skill.path);
 
-  const metadataPath = join(resolved.storage.root, "metadata", "skills", `${name}.json`);
+  const metadataPath = getSkillMetadataPath(resolved, name);
   if (await exists(metadataPath)) {
     await removePath(metadataPath);
   }
 
   return result;
+}
+
+async function readSkillMetadata(
+  resolved: ResolvedConfig,
+  name: string,
+): Promise<SkillMetadata | undefined> {
+  try {
+    const value = JSON.parse(
+      await readFile(getSkillMetadataPath(resolved, name), "utf8"),
+    ) as unknown;
+    if (!isRecord(value) || typeof value.name !== "string" || typeof value.path !== "string") {
+      return undefined;
+    }
+
+    const links = Array.isArray(value.links) ? value.links.filter(isManagedSkillLink) : [];
+    return {
+      name: value.name,
+      path: value.path,
+      hasSkillFile: value.hasSkillFile === true,
+      source: typeof value.source === "string" ? value.source : "unknown",
+      ...(typeof value.revision === "string" ? { revision: value.revision } : {}),
+      links,
+    };
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return undefined;
+    }
+    return undefined;
+  }
+}
+
+async function writeSkillMetadata(
+  resolved: ResolvedConfig,
+  metadata: SkillMetadata,
+): Promise<void> {
+  await writeJson(getSkillMetadataPath(resolved, metadata.name), metadata);
+}
+
+async function recordManagedLink(
+  resolved: ResolvedConfig,
+  skill: SkillSummary,
+  target: string,
+  mode: ManagedSkillLink["mode"],
+): Promise<void> {
+  const existing = await readSkillMetadata(resolved, skill.name);
+  const metadata: SkillMetadata = existing ?? {
+    name: skill.name,
+    path: skill.path,
+    hasSkillFile: skill.hasSkillFile,
+    source: "unknown",
+    links: [],
+  };
+  const links = metadata.links.filter((link) => link.target !== target);
+  links.push({ target, mode });
+  await writeSkillMetadata(resolved, { ...metadata, links });
+}
+
+function getSkillMetadataPath(resolved: ResolvedConfig, name: string): string {
+  return join(resolved.storage.root, "metadata", "skills", `${name}.json`);
+}
+
+function isManagedSkillLink(value: unknown): value is ManagedSkillLink {
+  return (
+    isRecord(value) &&
+    typeof value.target === "string" &&
+    (value.mode === "symlink" || value.mode === "copy")
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
 }
 
 async function getSkill(config: Config, name: string, configPath?: string): Promise<SkillSummary> {
@@ -218,7 +322,7 @@ async function getSkill(config: Config, name: string, configPath?: string): Prom
 
 function getTarget(resolved: ResolvedConfig, targetName: string) {
   const target = resolved.targets[targetName];
-  if (!target) {
+  if (!Object.hasOwn(resolved.targets, targetName) || !target) {
     throw new AgentMasterError("TARGET_NOT_FOUND", `No target named ${targetName} is configured.`);
   }
   return target;
@@ -227,9 +331,14 @@ function getTarget(resolved: ResolvedConfig, targetName: string) {
 async function inspectTarget(
   path: string,
   expectedSource?: string,
-): Promise<"missing" | "same-link" | "other"> {
+  managedMode?: ManagedSkillLink["mode"],
+): Promise<"missing" | "same-link" | "managed-copy" | "other"> {
   if (!(await exists(path))) {
     return "missing";
+  }
+
+  if (managedMode === "copy" && (await isDirectory(path))) {
+    return "managed-copy";
   }
 
   const resolvedLink = await resolveSymlink(path);
@@ -252,6 +361,24 @@ function validateSkillName(name: string): string {
 function deriveSkillName(directory: string): string {
   const name = basename(directory).replace(/\.git$/, "");
   return name || basename(dirname(directory));
+}
+
+function deriveSourceName(source: string, cwd: string): string {
+  return isGitSource(source)
+    ? deriveGitSkillName(source)
+    : deriveSkillName(resolveFrom(cwd, source));
+}
+
+function deriveGitSkillName(source: string): string {
+  const withoutQuery = source.split(/[?#]/, 1)[0] ?? source;
+  const withoutTrailingSlashes = withoutQuery.replace(/\/+$/, "");
+  const repositoryPath = withoutTrailingSlashes.includes("://")
+    ? withoutTrailingSlashes.slice(withoutTrailingSlashes.lastIndexOf("/") + 1)
+    : withoutTrailingSlashes
+        .slice(withoutTrailingSlashes.lastIndexOf(":") + 1)
+        .split("/")
+        .pop();
+  return (repositoryPath ?? "skill").replace(/\.git$/, "") || "skill";
 }
 
 async function prepareSource(
@@ -288,5 +415,5 @@ async function prepareSource(
 }
 
 function isGitSource(source: string): boolean {
-  return /^(?:git@|git\+ssh:\/\/|ssh:\/\/|git:\/\/|https?:\/\/)/.test(source);
+  return /^(?:file:\/\/|git@|git\+ssh:\/\/|ssh:\/\/|git:\/\/|https?:\/\/)/.test(source);
 }

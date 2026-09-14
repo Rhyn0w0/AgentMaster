@@ -1,5 +1,6 @@
 import { join, relative } from "node:path";
 import { resolveConfig } from "./config.js";
+import { AgentMasterError } from "./errors.js";
 import { exists, readDirectoryEntries } from "./filesystem.js";
 import type { AgentFile, Config } from "./types.js";
 
@@ -7,16 +8,39 @@ const ignoredDirectories = new Set([".git", "node_modules", "dist", "coverage"])
 
 export async function discoverAgents(
   config: Config,
-  options: { cwd?: string; configPath?: string } = {},
+  options: { cwd?: string; configPath?: string; targetName?: string } = {},
 ): Promise<AgentFile[]> {
   const cwd = options.cwd ?? process.cwd();
   const resolved = resolveConfig(config, options.configPath);
-  const globalPath = resolved.targets.codex?.agents;
   const projectPath = join(cwd, "AGENTS.md");
   const files: AgentFile[] = [];
+  const hasRequestedTarget =
+    options.targetName !== undefined && Object.hasOwn(resolved.targets, options.targetName);
 
-  if (globalPath) {
-    files.push({ scope: "global", path: globalPath, exists: await exists(globalPath) });
+  const targets = options.targetName
+    ? [
+        [
+          options.targetName,
+          hasRequestedTarget ? resolved.targets[options.targetName] : undefined,
+        ] as const,
+      ]
+    : Object.entries(resolved.targets);
+  if (options.targetName && !hasRequestedTarget) {
+    throw new AgentMasterError(
+      "TARGET_NOT_FOUND",
+      `No target named ${options.targetName} is configured.`,
+    );
+  }
+
+  for (const [targetName, target] of targets) {
+    if (target) {
+      files.push({
+        scope: "global",
+        path: target.agents,
+        exists: await exists(target.agents),
+        targetName,
+      });
+    }
   }
   files.push({ scope: "project", path: projectPath, exists: await exists(projectPath) });
 

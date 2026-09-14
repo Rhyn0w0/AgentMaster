@@ -8,8 +8,29 @@ export function expandPath(
   environment: NodeJS.ProcessEnv = process.env,
   homeDirectory = homedir(),
 ): string {
+  return resolve(expandPathValue(input, environment, homeDirectory));
+}
+
+export function resolveConfiguredPath(
+  configPath: string,
+  input: string,
+  environment: NodeJS.ProcessEnv = process.env,
+  homeDirectory = homedir(),
+): string {
+  const expandedConfigPath = expandPath(configPath, environment, homeDirectory);
+  const expandedInput = expandPathValue(input, environment, homeDirectory);
+  return isAbsolute(expandedInput)
+    ? resolve(expandedInput)
+    : resolve(dirname(expandedConfigPath), expandedInput);
+}
+
+function expandPathValue(
+  input: string,
+  environment: NodeJS.ProcessEnv,
+  homeDirectory: string,
+): string {
   const withHome = input.replace(/^~(?=\/|$)/, homeDirectory);
-  const withEnvironment = withHome.replace(
+  return withHome.replace(
     environmentVariablePattern,
     (match: string, bracedName?: string, plainName?: string) => {
       const name = bracedName ?? plainName;
@@ -22,8 +43,6 @@ export function expandPath(
       return value;
     },
   );
-
-  return resolve(withEnvironment);
 }
 
 export function getConfigPath(
