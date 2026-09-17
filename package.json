@@ -1,0 +1,26 @@
+{
+  "name": "agentmaster",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "build": "tsc --build packages/core packages/cli",
+    "check": "pnpm lint && pnpm typecheck",
+    "dev": "pnpm --filter @agentmaster/core build && pnpm --filter @agentmaster/cli dev",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome check .",
+    "test": "vitest run",
+    "typecheck": "tsc --build --pretty false packages/core packages/cli"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.13",
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
